@@ -130,6 +130,12 @@ module Saturn (
 	output     [15:0] SOUND_L,
 	output     [15:0] SOUND_R,
 	
+	input       [6:0] USERJOYSTICK,
+	output      [6:0] USERJOYSTICKOUT,
+	input 			  snac,
+	//input             joyswap, 
+	input		[2:0] JOY1_TYPE,
+	
 	input       [7:0] SCRN_EN,
 	input       [2:0] SND_EN,
 	input      [31:0] SLOT_EN,
@@ -660,6 +666,13 @@ module Saturn (
 		
 		.MIRQ_N(MIRQ_N),
 		.DOTSEL(SMPC_DOTSEL),
+		
+		.USERJOYSTICK(USERJOYSTICK),
+		.USERJOYSTICKOUT(USERJOYSTICKOUT),
+		.snac(snac),
+		//.joyswap(joyswap),	
+		.VBL_N(VBL_N),
+		.JOY1_TYPE(JOY1_TYPE),
 		
 		.PDR1I(SMPC_PDR1I),
 		.PDR1O(SMPC_PDR1O),

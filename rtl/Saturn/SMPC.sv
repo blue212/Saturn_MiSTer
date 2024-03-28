@@ -41,7 +41,14 @@ module SMPC (
 	output reg         INPUT_ACT,
 	output     [ 4: 0] INPUT_POS,
 	input      [ 7: 0] INPUT_DATA,
-	input              INPUT_WE
+	input              INPUT_WE,
+	
+	input      [ 6: 0] USERJOYSTICK,
+	output     [ 6: 0] USERJOYSTICKOUT,
+	input              snac,
+	//input              joyswap,	
+	input              VBL_N,
+	input      [ 2: 0] JOY1_TYPE
 );
 
 	//Registers
@@ -51,7 +58,7 @@ module SMPC (
 	bit   [7:0] IREG[7];
 	bit         PDR1O7;
 	bit         PDR2O7;
-//	bit   [1:0] IOSEL;
+	bit   [1:0] IOSEL;
 //	bit   [1:0] EXLE;
 	
 	bit          RESD;
@@ -82,6 +89,201 @@ module SMPC (
 	} CommExecState_t;
 	CommExecState_t COMM_ST;
 
+	//snac
+	bit   [15:0] serJoy;
+	bit   [ 6:0] UserSel;
+	bit   [15:0] tempdata;
+	bit   [ 3:0] tempbits;	
+	bit   [14:0] temp_CNT;
+	bit   [14:0] temp_CNT2;
+	bit   [14:0] snac_CNT;
+	bit   [ 4:0] data_CNT;
+	bit   [ 7:0] UserData[11];	//enough for dual mission stick
+	bit   [ 3:0] DataLUT[6];
+	bit   oldVBL;
+	bit   [ 3:0] megaID;
+	bit   THTRmode;
+	bit   threelinemode;
+	bit   THmode;
+	bit   waitforTLrising;
+	bit   waitforTLfalling;	
+	bit   oldTL;
+	bit   [ 7:0] saturnID;
+	bit   [ 4:0] dataSize1;
+	bit   [ 4:0] port2Start;
+
+	assign {DataLUT[0], DataLUT[1], DataLUT[2], DataLUT[3], DataLUT[4], DataLUT[5]} = {4'd4, 4'd1, 4'd5, 4'd7, 4'd8, 4'd11 };//data size of JOY1_TYPE	
+	
+	always_comb begin	
+		if (snac) USERJOYSTICKOUT = IOSEL[0] ? ~DDR1 | PDR1O : UserSel;		
+		//else if (snac && joyswap) USERJOYSTICKOUT = IOSEL[1] ? ~DDR2 | PDR2O : UserSel;
+		else USERJOYSTICKOUT = 7'h7F;		
+	end
+	
+	always @(posedge CLK) begin
+		tempdata = serJoy;
+		oldVBL <= VBL_N;		
+		if (~oldVBL && VBL_N) begin//start counter
+			snac_CNT <= 15'd0;
+			waitforTLfalling <= 1'b0;
+			waitforTLrising <= 1'b0;			
+			THTRmode <= 1'b0;
+			threelinemode <= 1'b0;
+			THmode <= 1'b0;
+			//segatap <= 1'b0;
+			//multitap <= 1'b0;
+			UserSel = 7'b1111111;
+		end		
+		if (snac_CNT < 15'd32001) snac_CNT <= snac_CNT + 1'd1;
+	
+		//check for something hooked up every frame by toggling TH low for 80us		
+		// calcualte mega drive id from that		
+		//determine protocol from that. saturn id only gotten if md id is 0x5		
+		//timings of select doesn't match real HW
+
+		if (snac_CNT == 15'd1000) serJoy[3:0] = USERJOYSTICK[3:0];
+		else if (snac_CNT == 15'd2500) {UserSel[6],UserSel[5]} <= 2'b01;//s0(TH) low, s1(TR) high. RLDU
+		else if (snac_CNT == 15'd3500) begin
+			serJoy[15:12] = USERJOYSTICK[3:0];				
+			megaID <= {serJoy[3] | serJoy[2], serJoy[1] | serJoy[0], USERJOYSTICK[3] | USERJOYSTICK[2], USERJOYSTICK[1] | USERJOYSTICK[0]};//calculate id1
+		end else if (snac_CNT == 15'd3501) begin//get type
+			if (megaID == 4'hB) begin//TH and TR control mode							
+				THTRmode <= 1'b1;
+				UserData[0] <= 8'hF1;//portstatus1;
+				UserData[1] <= 8'h02;//saturnID; 
+				port2Start <= 5'd4;
+			end else if (megaID == 4'h5) begin//3 line handshake - have to get saturn id
+				threelinemode <= 1'b1;
+				dataSize1 <= 5'd3;//temp value
+				UserData[0] <= 8'hF1;// portstatus1;//taps aren't F1
+			/*
+			end else if (megaID == 4'h7) begin//sega multitap (GEN/MD)					
+				threelinemode <= 1'b1;
+				segatap <= 1'b1;
+				portstatus1 <= 8'h04;
+			*/					
+			end else if (megaID == 4'h3) begin //mouse					
+				threelinemode <= 1'b1;
+				dataSize1 <= 5'd3;
+				port2Start <= 5'd5;
+				UserData[0] <= 8'hF1;//portstatus1;
+				UserData[1] <= 8'hE3;//saturnID; 	
+			end else if (megaID == 4'hD) begin//GEN/MD 3/6					
+				THmode <= 1'b1;
+				UserData[0] <= 8'hF1;//portstatus1;
+			end else if (megaID == 4'hF) begin//nothing detected					
+				THTRmode <= 1'b0;
+				threelinemode <= 1'b0;
+				THmode <= 1'b0;
+			end
+		end
+		
+		if (~THTRmode && ~threelinemode && ~THmode) begin
+			if (snac_CNT == 15'd5000) begin
+				{UserSel[6],UserSel[5]} <= 2'b11;
+				UserData[0] <= {megaID , 4'h0};//F0 = nothing, A0 = Stunner
+				port2Start <= 5'd1;	
+			end	
+		end
+
+		////////////TH and TR control mode
+		if (THTRmode) begin
+			if (snac_CNT == 15'd5000) {UserSel[6],UserSel[5]} <= 2'b10;//Sacb
+			else if (snac_CNT == 15'd6500) serJoy[11:8] = USERJOYSTICK[3:0];
+			else if (snac_CNT == 15'd7500) {UserSel[6],UserSel[5]} <= 2'b00;//rxyz
+			else if (snac_CNT == 15'd9000) serJoy[7:4] = USERJOYSTICK[3:0];
+			else if (snac_CNT == 15'd10000) begin
+				{UserSel[6],UserSel[5]} <= 2'b11;
+				serJoy[2:0] = 3'b111;//fix the bits
+			end else if (snac_CNT == 15'd10001) begin
+				UserData[2] <= tempdata[15:8]; 
+				UserData[3] <= tempdata[7:0]; 					
+			end			
+		end
+				
+		//////////// TH mode
+		if (THmode) begin
+			if (snac_CNT == 15'd5000) {UserSel[6],UserSel[5]} <= 2'b11;
+			else if (snac_CNT == 15'd5500) begin				
+				serJoy[15:12] = USERJOYSTICK[3:0];//RLDU
+				serJoy[9:8] = USERJOYSTICK[5:4];//cb					
+			end else if (snac_CNT == 15'd6000) {UserSel[6],UserSel[5]} <= 2'b01;
+			else if (snac_CNT == 15'd6500) serJoy[11:10] = USERJOYSTICK[5:4];//SA					
+			else if (snac_CNT == 15'd7000) {UserSel[6],UserSel[5]} <= 2'b11;
+			else if (snac_CNT == 15'd7500) serJoy[3:0] = USERJOYSTICK[3:0];//for id check
+			else if (snac_CNT == 15'd8000) {UserSel[6],UserSel[5]} <= 2'b01;
+			else if (snac_CNT == 15'd9000) megaID <= {serJoy[3] | serJoy[2], serJoy[1] | serJoy[0], USERJOYSTICK[3] | USERJOYSTICK[2], USERJOYSTICK[1] | USERJOYSTICK[0]};//check id again
+			else if (snac_CNT == 15'd10000) begin			
+				{UserSel[6],UserSel[5]} <= 2'b11;
+				if (megaID == 4'hD) begin
+					saturnID <= 8'hE1;//3 button
+					port2Start <= 5'd3;
+					UserData[1] <= 8'hE1;//saturnID;
+					UserData[2] <= tempdata[15:8];
+				end else if (megaID == 4'hC) begin
+					saturnID <= 8'hE2;//6 button
+					UserData[1] <= 8'hE2;//saturnID;
+					port2Start <= 5'd4;	
+				end
+			end			
+			if (saturnID == 8'hE2) begin///6 button
+				if (snac_CNT == 15'd11000) serJoy[7:4] = USERJOYSTICK[3:0];//MXYZ
+				else if (snac_CNT == 15'd12000) {UserSel[6],UserSel[5]} <= 2'b01;	
+				else if (snac_CNT == 15'd13000) serJoy[3:0] = USERJOYSTICK[3:0];//1111						
+				else if (snac_CNT == 15'd14000) begin			
+					{UserSel[6],UserSel[5]} <= 2'b11;
+					UserData[2] <= tempdata[15:8]; 
+					UserData[3] <= tempdata[7:0];							
+				end
+			end
+		end		
+	
+		//////////////threeline mode
+		if (threelinemode) begin			
+			oldTL <= USERJOYSTICK[4];	
+			if (snac_CNT == 15'd5000) begin	
+				{UserSel[6],UserSel[5]} <= 2'b00;				
+				waitforTLfalling <= 1'b1;
+				data_CNT <= 5'd0;
+			end else if (waitforTLrising && snac_CNT == temp_CNT + 15'd800) begin				
+				{UserSel[6],UserSel[5]} <= 2'b01;
+			end else if (waitforTLfalling && snac_CNT == temp_CNT2 + 15'd1000) begin				
+				{UserSel[6],UserSel[5]} <= 2'b00;
+				snac_CNT <= 15'd10000;//reset the counter to 10000 so it doesn't get too big
+			end else if (waitforTLfalling) begin
+				if (oldTL && ~USERJOYSTICK[4]) begin
+					if (data_CNT == 5'd0) begin
+						saturnID[7:4] = USERJOYSTICK[3:0];//half of saturn id
+					end else begin
+						tempbits <= USERJOYSTICK[3:0];//savings half the bits til rising edge
+					end						
+					temp_CNT <= snac_CNT;
+					waitforTLfalling <= 1'b0;
+					waitforTLrising <= 1'b1;							
+				end
+			end else if (waitforTLrising) begin
+				if (~oldTL && USERJOYSTICK[4]) begin						
+					if (data_CNT == 5'd0) begin
+						if (megaID != 4'h3 && megaID != 4'h7) begin
+							saturnID[3:0] = USERJOYSTICK[3:0];//half of saturn id, datasize
+							dataSize1 <= {1'b0,USERJOYSTICK[3:0]};
+							port2Start <= 5'd2 + USERJOYSTICK[3:0];
+							UserData[1] <= {saturnID[7:4],USERJOYSTICK[3:0]};
+						end	
+					end else begin
+						UserData[data_CNT + 1] <= {tempbits, USERJOYSTICK[3:0]};
+					end					
+					data_CNT <= data_CNT + 5'd1;
+					temp_CNT2 <= snac_CNT;
+					waitforTLrising <= 1'b0;
+					if (data_CNT < dataSize1) waitforTLfalling <= 1'b1;
+					else {UserSel[6],UserSel[5]} <= 2'b11;
+				end
+			end
+		end
+	end
+	/////////
+				
 	always @(posedge CLK or negedge RST_N) begin
 		bit [21: 0] CLK_CNT;
 		bit         SEC_CLK,MIN_CLK,HOUR_CLK,DAYS_CLK,MONTH_CLK,YEAR_CLK;
@@ -210,7 +412,7 @@ module SMPC (
 			PDR2O <= '0;
 			DDR1 <= '0;
 			DDR2 <= '0;
-//			IOSEL <= '0;
+			IOSEL <= '0;
 //			EXLE <= '0;
 			
 			MSHRES_N <= 0;
@@ -637,16 +839,32 @@ module SMPC (
 					end
 					
 					CS_INTBACK_PERI: begin
-						if (INPUT_ACT && INPUT_WE) begin
-							OREG_CNT <= OREG_CNT + 5'd1;
-							if (OREG_CNT == 5'd30) begin
+						if (snac && OREG_CNT != 5'd31) begin						
+							if (OREG_CNT < port2Start) begin//port1(snac)
 								INPUT_ACT <= 0;
+								OREG_RAM_D <= UserData[OREG_CNT];							
+							end else begin//port2(usb1)
+								if (INPUT_ACT && INPUT_WE) begin
+									OREG_RAM_D <= INPUT_DATA;
+								end							
 							end
+							OREG_CNT <= OREG_CNT + 5'd1;				
 							OREG_RAM_WA <= OREG_CNT;
-							OREG_RAM_D <= INPUT_DATA;
 							OREG_RAM_WE <= 1;
-						end
-						else if (OREG_CNT == 5'd31) begin
+							if (OREG_CNT == port2Start - 2 || OREG_CNT == port2Start - 1 ) INPUT_ACT <= 1;
+							if (OREG_CNT == 5'd30) INPUT_ACT <= 0;
+							if ((OREG_CNT > port2Start + DataLUT[JOY1_TYPE]-1) && OREG_CNT < 5'd31 ) OREG_RAM_D <= 8'h00;//real HW doesn't do this					
+						end else if (~snac && OREG_CNT != 5'd31) begin
+							if (INPUT_ACT && INPUT_WE) begin
+								OREG_CNT <= OREG_CNT + 5'd1;
+								if (OREG_CNT == 5'd30) begin
+									INPUT_ACT <= 0;
+								end
+								OREG_RAM_WA <= OREG_CNT;
+								OREG_RAM_D <= INPUT_DATA;
+								OREG_RAM_WE <= 1;
+							end
+						end else if (OREG_CNT == 5'd31) begin
 							OREG_CNT <= OREG_CNT + 5'd1;
 							OREG_RAM_WA <= OREG_CNT;
 							OREG_RAM_D <= COMREG;
@@ -765,7 +983,7 @@ module SMPC (
 					7'h77: {PDR2O7,PDR2O} <= DI;
 					7'h79: DDR1 <= DI[6:0];
 					7'h7B: DDR2 <= DI[6:0];
-//					7'h7D: IOSEL <= DI[1:0];
+					7'h7D: IOSEL <= DI[1:0];
 //					7'h7F: EXLE <= DI[1:0];
 					default:;
 				endcase
@@ -779,8 +997,10 @@ module SMPC (
 					case ({A,1'b1})
 						7'h61: REG_DO <= SR;
 						7'h63: REG_DO <= {7'b0000000,SF};
-						7'h75: REG_DO <= {PDR1O7,PDR1I};
+						//7'h75: REG_DO <= {PDR1O7,PDR1I};
+						7'h75: REG_DO <= {PDR1O7,snac ? USERJOYSTICK : PDR1I};
 						7'h77: REG_DO <= {PDR2O7,PDR2I};
+						//7'h77: REG_DO <= {PDR2O7,(snac && joyswap) ? USERJOYSTICK : PDR2I};
 						default: REG_DO <= '0;
 					endcase
 			end

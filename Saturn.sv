@@ -173,7 +173,6 @@ module emu
 	assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 	assign BUTTONS   = {1'b0,osd_btn};
 	assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-	assign USER_OUT = '0;
 
 	always_comb begin
 		if (status[10]) begin
@@ -237,7 +236,7 @@ module emu
 	// 0         1         2         3          4         5         6   
 	// 01234567890123456789012345678901 23456789012345678901234567890123
 	// 0123456789ABCDEFGHIJKLMNOPQRSTUV 0123456789ABCDEFGHIJKLMNOPQRSTUV
-	// XXXX XXXXXXXXXXXXXXXXXXXXXX       XXXXXXXXXXXXX                
+	// XXXX XXXXXXXXXXXXXXXXXXXXXXX      XXXXXXXXXXXXX               
 	
 	`include "build_id.v"
 	localparam CONF_STR = {
@@ -267,6 +266,8 @@ module emu
 		"P2-;",
 		"P2OFH,Pad 1,Digital,Off,Wheel,Mission Stick,3D Pad,Dual Mission;",
 		"P2OIK,Pad 2,Digital,Off,Wheel,Mission Stick,3D Pad,Dual Mission;",
+		"P2OR,SNAC,OFF,ON;",
+		//"P2OS,SNAC PORT,1,2;",
 		"-;",
 		
 `ifndef DEBUG
@@ -850,6 +851,13 @@ module emu
 		.SCRN_EN(SCRN_EN & SCRN_EN2),
 		.SND_EN(SND_EN & SND_EN2),
 		.SLOT_EN(SLOT_EN),
+
+		.USERJOYSTICK(USERJOYSTICK),
+		.USERJOYSTICKOUT(USERJOYSTICKOUT),
+		.snac(snac),
+		//.joyswap(joyswap),
+		.JOY1_TYPE(status[17:15]),
+		
 		.DBG_PAUSE(DBG_PAUSE),
 		.DBG_BREAK(DBG_BREAK),
 		.DBG_RUN(DBG_RUN),
@@ -1546,7 +1554,20 @@ module emu
 		.HBlank(~HBL_N),
 		.VBlank(~VBL_N)
 	);
-
+	
+	wire [6:0] USERJOYSTICK;
+	wire [6:0] USERJOYSTICKOUT;
+	wire snac = status[27];
+	//wire joyswap = status[28];
+	
+	always @(posedge clk_sys) begin
+		if (snac) begin
+			USERJOYSTICK <= {USER_IN[4], USER_IN[6], USER_IN[2], USER_IN[3], USER_IN[5], USER_IN[0], USER_IN[1]};//TH, C(TR), B(TL), R, L, D, U
+			USER_OUT <= {USERJOYSTICKOUT[5], USERJOYSTICKOUT[2], USERJOYSTICKOUT[6], USERJOYSTICKOUT[3], USERJOYSTICKOUT[4], USERJOYSTICKOUT[0], USERJOYSTICKOUT[1]};
+		end else begin
+			USER_OUT <= '1;
+		end
+	end
 
 	//debug
 	reg  [ 7: 0] SCRN_EN = 8'b11111111;
